@@ -1,0 +1,60 @@
+# Committed byte-identically to .github/workflows/release.yml in every fixture repository
+# (predecessor and successor), so the certificate SAN differs only through the owner name.
+name: release
+on:
+  workflow_dispatch:
+    inputs:
+      marker:
+        description: which principal built this (free text, appears in the artifact)
+        required: true
+env:
+  TAG: v1
+permissions:
+  id-token: write
+  contents: write
+  attestations: write
+  packages: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build a benign research artifact
+        run: |
+          {
+            echo "research artifact - AsiaCCS 2027 paper #1137, confirmatory delivery experiment"
+            echo "this file is a test fixture and is not software"
+            echo "built_by_marker: ${{ inputs.marker }}"
+            echo "repository: ${{ github.repository }}"
+            echo "repository_owner_id: ${{ github.repository_owner_id }}"
+            echo "run_id: ${{ github.run_id }}"
+          } > artifact.bin
+          sha256sum artifact.bin
+      - name: Attest the release asset
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: artifact.bin
+      - name: Publish the release asset at a stable URL
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$TAG" artifact.bin --repo "$GITHUB_REPOSITORY" --notes "research fixture" \
+            || gh release upload "$TAG" artifact.bin --repo "$GITHUB_REPOSITORY" --clobber
+      - name: Build and push a container image carrying the same artifact
+        id: image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          printf 'FROM scratch\nCOPY artifact.bin /artifact.bin\n' > Dockerfile
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker build -t "$IMAGE:$TAG" .
+          docker push "$IMAGE:$TAG"
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE:$TAG" | cut -d@ -f2)
+          echo "name=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+      - name: Attest the image and push the attestation to the registry
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
